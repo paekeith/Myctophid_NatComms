@@ -403,7 +403,7 @@ data_monthly_averages$location_group[which(data_monthly_averages$Cruise=="JR200"
                                                                                       data_monthly_averages$Event==227))] <- 23
 data_monthly_averages$location_group[which(data_monthly_averages$Cruise=="JR200" & (data_monthly_averages$Event==235|data_monthly_averages$Event==236|
                                                                                       data_monthly_averages$Event==237))] <- 24
-write.csv(data_monthly_averages,"Data/Processed/FINAL_FISH_DATA.csv")
+write.csv(data_monthly_averages,"Data/Processed_data/FINAL_FISH_DATA.csv")
 
 
 ## Zooplankton data -------------------------------------------------------------
@@ -882,7 +882,7 @@ combined_data_reduced <- subset(combined_data_reduced,select = c(Cruise,Taxa,loc
 combined_data_2 <- rbind(combined_data_reduced,data_meso_subset_means)
 combined_data_2 <- combined_data_2[order(combined_data_2$location_group),]
 
-write.csv(combined_data_2,"Data/Processed/PLANKTON_DATA.csv")
+write.csv(combined_data_2,"Data/Processed_data/PLANKTON_DATA.csv")
 
 
 

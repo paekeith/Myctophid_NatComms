@@ -18,7 +18,7 @@ library(gstat)
 # library(nlmeU)
 
 ## FISH DATA -----------------------------------------------------------------------------
-data <- read.csv("Data/Processed/FINAL_FISH_DATA.csv")
+data <- read.csv("Data/Processed_data/FINAL_FISH_DATA.csv")
 
 summary(data)
 
@@ -987,8 +987,8 @@ kern = function(x,xi,h){
   return(out)
 }
 
-data.zoop <- read.csv("Data/Processed/PLANKTON_DATA.csv")
-data.fish <- read.csv("Data/Processed/FINAL_FISH_DATA.csv")
+data.zoop <- read.csv("Data/Processed_data/PLANKTON_DATA.csv")
+data.fish <- read.csv("Data/Processed_data/FINAL_FISH_DATA.csv")
 #excluding the rows which do not have a location group
 data.fish <- subset(data.fish,data.fish$location_group!="NA")
 
@@ -1138,8 +1138,8 @@ for(i in 1:nrow(preference_data)){
   
 }
 
-write.csv(preference_data,"Data/Processed/diet_size_preferences.csv") #this is the main dataset to use for analyses
-write.csv(data.fish,"Data/Processed/preference_data_fish_info.csv") #this is a record of the "statistical fish" 
+write.csv(preference_data,"Data/Processed_data/diet_size_preferences.csv") #this is the main dataset to use for analyses
+write.csv(data.fish,"Data/Processed_data/preference_data_fish_info.csv") #this is a record of the "statistical fish" 
 
 ### Selectivity models ####
 #loading packages and data
@@ -1154,8 +1154,8 @@ library(effects)
 library(RColorBrewer)
 library(car)
 
-preferences <- read.csv("Data/Processed/diet_size_preferences.csv")
-fish_data <- read.csv("Data/Processed/preference_data_fish_info.csv") #this is needed to associate the cruise and locations
+preferences <- read.csv("Data/Processed_data/diet_size_preferences.csv")
+fish_data <- read.csv("Data/Processed_data/preference_data_fish_info.csv") #this is needed to associate the cruise and locations
 
 preferences$Cruise <- NA
 preferences$location_group <- NA
@@ -1347,7 +1347,7 @@ library(reldist)
 library(ggridges)
 library(viridis)
 
-data.zoop <- read.csv("Data/Processed/PLANKTON_DATA.csv")
+data.zoop <- read.csv("Data/Processed_data/PLANKTON_DATA.csv")
 
 #subsetting the data to exclude prey sizes that are outwith the distribution of sizes commonly consumed by the fish.
 # (i.e very small prey that are rarely found are assumed to be accidental ingestion)
