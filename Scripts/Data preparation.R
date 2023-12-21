@@ -12,16 +12,16 @@ library(rgdal) # package for geospatial analysis
 library(tidyverse)
 
 ## Fish Data -----------------------------------------------------------------------------------
-data <- read.xlsx("Data/Inputs/Stomach_Contents_2023_12_16.xlsx",detectDates = TRUE)
+data <- read.xlsx("Data/Input_data/Stomach_Contents_2023_12_16.xlsx",detectDates = TRUE)
 # Refining the data #
 data$Date <- as.character(data$Date) #making sure dates are in format comparable to environmental data
 data <- subset(data,data$Cruise!="JR100") #subsetting to remove JR100 from the data
 
 ### extracting SST data ####
 #loading in environmental data
-data_2006 <- nc_open("Data/Inputs/Environmental data/2006_fish_SST.nc")
-data_2008 <- nc_open("Data/Inputs/Environmental data/2008_fish_SST.nc")
-data_2009 <- nc_open("Data/Inputs/Environmental data/2009_fish_SST.nc")
+data_2006 <- nc_open("Data/Input_data/Environmental_data/2006_fish_SST.nc")
+data_2008 <- nc_open("Data/Input_data/Environmental_data/2008_fish_SST.nc")
+data_2009 <- nc_open("Data/Input_data/Environmental_data/2009_fish_SST.nc")
 
 #extracting the spatial coordinates for the data (should be the same across years)
 lat <- ncvar_get(data_2009,"latitude") 
@@ -115,9 +115,9 @@ for(i in 1:nrow(data_monthly_averages)){
 
 ### extracting temperature at depth data ####
 #loading in environmental data - temperature at depth, with 36 depth slices and a maximum of 1062m (the depth limit for myctophid core range)
-data_2006 <- nc_open("Data/Inputs/Environmental data/2006_temperature_at_depth.nc")
-data_2008 <- nc_open("Data/Inputs/Environmental data/2008_temperature_at_depth.nc")
-data_2009 <- nc_open("Data/Inputs/Environmental data/2009_temperature_at_depth.nc")
+data_2006 <- nc_open("Data/Input_data/Environmental_data/2006_temperature_at_depth.nc")
+data_2008 <- nc_open("Data/Input_data/Environmental_data/2008_temperature_at_depth.nc")
+data_2009 <- nc_open("Data/Input_data/Environmental_data/2009_temperature_at_depth.nc")
 
 #extracting the spatial coordinates for the data (should be the same across years)
 lat <- ncvar_get(data_2009,"latitude") 
@@ -237,9 +237,9 @@ for(i in 1:nrow(data_monthly_averages)){
 
 ### Extracting CHL data ####
 #extracting the original fine-scale CHL data:
-data_2006 <- nc_open("Data/Inputs/Environmental data/2006_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
-data_2008 <- nc_open("Data/Inputs/Environmental data/2008_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
-data_2009 <- nc_open("Data/Inputs/Environmental data/2009_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
+data_2006 <- nc_open("Data/Input_data/Environmental_data/2006_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
+data_2008 <- nc_open("Data/Input_data/Environmental_data/2008_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
+data_2009 <- nc_open("Data/Input_data/Environmental_data/2009_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc")
 
 #extracting the spatial coordinates for the data (should be the same across years)
 lat <- ncvar_get(data_2009,"lat")
@@ -406,15 +406,15 @@ data_monthly_averages$location_group[which(data_monthly_averages$Cruise=="JR200"
 write.csv(data_monthly_averages,"Data/Processed_data/FINAL_FISH_DATA.csv")
 
 
-## Zooplankton data -------------------------------------------------------------
+## Zooplankton_data -------------------------------------------------------------
 
 # First I need to tidy up the data. Starting with the macrozooplankton before moving on to the
 # mesozooplankton
 
 # refining the macrozooplankton data #
-macro_jr161 <- read.csv("Data/Inputs/Zooplankton data/Macro_JR161.csv")
-macro_jr177 <- read.csv("Data/Inputs/Zooplankton data/Macro_JR177.csv")
-macro_jr200 <- read.csv("Data/Inputs/Zooplankton data/Macro_JR200.csv")
+macro_jr161 <- read.csv("Data/Input_data/Zooplankton_data/Macro_JR161.csv")
+macro_jr177 <- read.csv("Data/Input_data/Zooplankton_data/Macro_JR177.csv")
+macro_jr200 <- read.csv("Data/Input_data/Zooplankton_data/Macro_JR200.csv")
 
 #combining these three datasets
 macro_data <- rbind(macro_jr161,macro_jr177,macro_jr200)
@@ -483,9 +483,9 @@ macro_data$log10_mass <- log10(macro_data$mean_wet_mass)
 macro_data$biomass_m2 <- macro_data$mean_wet_mass*macro_data$mean_density_m2
 
 # refining the mesozooplankton data #
-meso_jr161 <- read.csv("Data/Inputs/Zooplankton data/Meso_JR161.csv")
-meso_jr177 <- read.csv("Data/Inputs/Zooplankton data/Meso_JR177.csv")
-meso_jr200 <- read.csv("Data/Inputs/Zooplankton data/Meso_JR200.csv")
+meso_jr161 <- read.csv("Data/Input_data/Zooplankton_data/Meso_JR161.csv")
+meso_jr177 <- read.csv("Data/Input_data/Zooplankton_data/Meso_JR177.csv")
+meso_jr200 <- read.csv("Data/Input_data/Zooplankton_data/Meso_JR200.csv")
 
 # combining the datasets into a single dataframe the raw abundance data in long format
 meso_161_long <- meso_jr161 %>%
@@ -655,9 +655,9 @@ meso_data_long <- rbind(meso_161_long,meso_177_long,meso_200_long)
 meso_data_long$Event <- as.integer(sub('.', '', meso_data_long$Event)) #removing the E from the event names
 
 ### Matching SST data to events for both macrozooplankton and mesozooplankton ####
-data_2006 <- nc_open("Data/Inputs/Environmental data/2006_zoo_SST.nc")
-data_2008 <- nc_open("Data/Inputs/Environmental data/2008_zoo_SST.nc")
-data_2009 <- nc_open("Data/Inputs/Environmental data/2009_zoo_SST.nc")
+data_2006 <- nc_open("Data/Input_data/Environmental_data/2006_zoo_SST.nc")
+data_2008 <- nc_open("Data/Input_data/Environmental_data/2008_zoo_SST.nc")
+data_2009 <- nc_open("Data/Input_data/Environmental_data/2009_zoo_SST.nc")
 
 #extracting the spatial coordinates for the data (should be the same across years)
 lat <- ncvar_get(data_2009,"latitude") 
