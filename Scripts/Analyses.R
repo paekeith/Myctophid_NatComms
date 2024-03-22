@@ -13,10 +13,6 @@ library(ape)
 library(sp)
 library(gstat)
 
-# library(car)
-# library(stats)
-# library(nlmeU)
-
 ## FISH DATA -----------------------------------------------------------------------------
 data <- read.csv("Data/Processed_data/FINAL_FISH_DATA.csv")
 
