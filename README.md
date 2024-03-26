@@ -1,1 +1,1 @@
-Data and scripts for the manuscript published at:
+Data and scripts for the manuscript titled:
