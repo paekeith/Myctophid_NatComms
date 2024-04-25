@@ -1,0 +1,1848 @@
+#### 05/12/2024 ####
+
+#This script is for analysing the wider myctophids dataset from the discovery cruises (i.e. not limited solely to the fish for which we have stomach contents)
+
+#### loading packages ####
+library(ggplot2)
+library(tidyverse)
+library(nlme)
+library(MuMIn)
+library(sp)
+library(gstat)
+library(ape)
+#### loading in data: ####
+stomachs_fish <- read.csv("Data/Processed_data/FINAL_FISH_DATA.csv") #my myctophid data with stomach contents
+
+all_abundances <- read.csv("Data/Input_data/fish_catch.csv")
+all_fish_data <- read.csv("Data/Input_data/individual_fish_records.csv")
+
+net_info <- read.csv("Data/Input_data/net_data.csv")
+
+#excluding net hauls that were targeted
+# net_info <- net_info[net_info$Stratified=="Stratified",]
+
+#now excluding events that aren't in the net hauls dataset
+#first need to make a new identifier column which combines the year, event and net
+net_info$cruise_event_net <- paste(net_info$Cruise,net_info$Event,net_info$Net,sep = "_")
+all_abundances$cruise_event_net <- paste(all_abundances$Cruise,all_abundances$Event,all_abundances$Net,sep = "_")
+all_fish_data$cruise_event_net <- paste(all_fish_data$Cruise,all_fish_data$Event,all_fish_data$Net,sep = "_")
+stomachs_fish$cruise_event_net <- paste(stomachs_fish$Cruise,stomachs_fish$Event,stomachs_fish$Net,sep = "_")
+
+#now subsetting
+all_abundances <- all_abundances[all_abundances$cruise_event_net %in% net_info$cruise_event_net,]
+all_fish_data <- all_fish_data[all_fish_data$cruise_event_net %in% net_info$cruise_event_net,]
+
+#refining the datasets to only include the focal species
+species_codes <- as.data.frame(unique(all_fish_data$Species.Code)[(unique(all_fish_data$Species.Code) %in% unique(stomachs_fish$Species.Code))])
+colnames(species_codes) <- c("code")
+species_codes$species <- NA
+
+#linking species codes to names
+for(i in 1:nrow(species_codes)){
+  index <- which(all_fish_data$Species.Code==species_codes$code[i])[1]
+  species_codes$species[i] <- all_fish_data$Species.Name[index]
+}
+
+#subsetting only the focal species
+all_abundances <- all_abundances[all_abundances$Species.Name %in% species_codes$species,]
+all_fish_data <- all_fish_data[all_fish_data$Species.Name %in% species_codes$species,]
+
+
+#adding species codes to the abundance data
+all_abundances$Species.code <- NA
+for(i in 1:nrow(all_abundances)){
+  index <- which(species_codes$species==all_abundances$Species.Name[i])[1]
+  all_abundances$Species.code[i] <- species_codes$code[index]
+}
+
+#estimating abundances/m2 for each haul, based on number caught and area sampled, using equation distance towed * 25m2
+all_abundances$vol_filtered <- NA
+all_abundances$abundance_vol_filtered <- NA
+#excluding hauls that were targetted
+
+for(i in 1:nrow(all_abundances)){
+  index  <- which(net_info$cruise_event_net==all_abundances$cruise_event_net[i])
+    all_abundances$vol_filtered[i] <- (net_info$Distance..m.[index]*25)
+  all_abundances$abundance_vol_filtered[i] <- all_abundances$Count[i]/(net_info$Distance..m.[index]*25)
+}
+
+all_abundances$abundance_1000m3 <- all_abundances$abundance_vol_filtered/(all_abundances$vol_filtered/1000)
+
+#calculating body mass of each fish from SL using discovery regressions in my dataset:
+all_fish_data$mass_g <- NA
+for(i in 1:nrow(all_fish_data)){
+  index  <- which(stomachs_fish$Species.Code==all_fish_data$Species.Code[i])[1]
+  all_fish_data$mass_g[i] <- stomachs_fish$a_discovery[index]*all_fish_data$SL[i]^stomachs_fish$b_discovery[index]
+}
+
+all_fish_data$mass_log10 <- log10(all_fish_data$mass_g)
+
+#### Running analyses only on the events from my other data ------------------------------
+#matching events to SST and CHL
+all_fish_data$SST <- NA
+all_fish_data$CHL <- NA
+all_fish_data$Lat <- NA
+all_fish_data$Lon <- NA
+
+for(i in 1:nrow(all_fish_data)){
+  index  <- which(stomachs_fish$cruise_event_net==all_fish_data$cruise_event_net[i])
+  all_fish_data$SST[i] <- stomachs_fish$SST[index][1]
+  all_fish_data$CHL[i] <- stomachs_fish$CHL[index][1]
+  all_fish_data$Lat[i] <- stomachs_fish$Lat[index][1]
+  all_fish_data$Lon[i] <- stomachs_fish$Lon[index][1]
+  }
+
+summary(all_fish_data)
+plot(all_fish_data$SST~all_fish_data$Lat)
+#subsetting to remove the events which aren't in the original fish data
+all_fish_data <- all_fish_data%>%
+  drop_na(SST)
+
+rowSums(table(all_fish_data$Species.Code,all_fish_data$Cruise))
+
+all_abundances$SST <- NA
+all_abundances$CHL <- NA
+all_abundances$Lat <- NA
+all_abundances$Lon <- NA
+
+for(i in 1:nrow(all_abundances)){
+  index  <- which(stomachs_fish$cruise_event_net==all_abundances$cruise_event_net[i])
+  all_abundances$SST[i] <- stomachs_fish$SST[index][1]
+  all_abundances$CHL[i] <- stomachs_fish$CHL[index][1]
+  all_abundances$Lat[i] <- stomachs_fish$Lat[index][1]
+  all_abundances$Lon[i] <- stomachs_fish$Lon[index][1]
+}
+
+summary(all_abundances)
+#subsetting to remove the events which aren't in the original fish data
+all_abundances <- all_abundances%>%
+  drop_na(SST)
+  
+#### running mixed effects model at community level ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+
+mod_gls <- gls(mass_log10~SST*CHL,data=all_fish_data,method="REML") 
+mod_1 <- lme(mass_log10~SST*CHL,random = list(~1|Species.Code),data=all_fish_data,method = "REML",control=lmec) 
+mod_2 <- lme(mass_log10~SST*CHL,random = list(~1|Cruise),data=all_fish_data,method = "REML",control=lmec) 
+mod_3 <- lme(mass_log10~SST*CHL,random = list(~1|Cruise,~1|Species.Code),data=all_fish_data,method = "REML",control=lmec) 
+
+mod_4 <- lme(mass_log10~SST*CHL,random = list(~1+SST|Species.Code),data=all_fish_data,method = "REML",control=lmec) 
+mod_5 <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Species.Code),data=all_fish_data,method = "REML",control=lmec) #no convergence
+mod_6 <- lme(mass_log10~SST*CHL,random = list(~1+CHL+SST|Species.Code),data=all_fish_data,method = "REML",control=lmec) #no convergence
+
+mod_7 <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise),data=all_fish_data,method = "REML",control=lmec)
+mod_8 <- lme(mass_log10~SST*CHL,random = list(~1+SST|Cruise),data=all_fish_data,method = "REML",control=lmec)
+# mod_9 <- lme(mass_log10~SST*CHL,random = list(~1+SST+CHL|Cruise),data=all_fish_data,method = "REML",control=lmec)
+
+mod_10 <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+# mod_11 <- lme(mass_log10~SST*CHL,random = list(~1+SST|Cruise,~1|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+# mod_12 <- lme(mass_log10~SST*CHL,random = list(~1+SST+CHL|Cruise,~1|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+
+mod_13 <- lme(mass_log10~SST*CHL,random = list(~1|Cruise,~1+SST|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+mod_14 <- lme(mass_log10~SST*CHL,random = list(~1|Cruise,~1+CHL|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+mod_15 <- lme(mass_log10~SST*CHL,random = list(~1|Cruise,~1+SST+CHL|SST),data=all_fish_data,method = "REML",control=lmec)
+
+# mod_16 <- lme(mass_log10~SST*CHL,random = list(~1+SST|Cruise,~1+CHL|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+mod_17 <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+CHL|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+mod_18 <- lme(mass_log10~SST*CHL,random = list(~1+SST|Cruise,~1+SST|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+mod_19 <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),data=all_fish_data,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_2,mod_3,mod_4,mod_6,mod_7,mod_8,mod_10,mod_11,mod_13,mod_14,mod_15,
+                                   mod_16,mod_18,mod_19))
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_2,mod_3,mod_4,mod_5,mod_6,mod_7,mod_8,mod_10,mod_13,mod_14,mod_15,
+                                   mod_1,mod_18,mod_19))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_2,mod_3,mod_4,mod_6,mod_7,mod_8,mod_10,mod_11,mod_13,mod_14,mod_15))
+
+summary(mod_19)
+
+windows(record=T)
+plot(mod_19)
+qqnorm(resid(mod_19,type = "pearson"))
+qqline(resid(mod_19,type = "pearson")) 
+plot(factor(all_fish_data$Species.Code),resid(mod_19,type="pearson"))
+plot(factor(all_fish_data$Cruise),resid(mod_19,type="pearson"))
+
+# adding variance structures
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_sp <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                         weights = varIdent(form= ~ 1 | Species.Code),
+                         data=all_fish_data,method = "REML",control=lmec) 
+
+lme_mass_ident_Cruise <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=all_fish_data,method = "REML",control=lmec) 
+
+lme_mass_fix_SST <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                        weights = varFixed(~SST),
+                        data=all_fish_data,method = "REML",control=lmec)
+
+# lme_mass_fix_chl <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+#                         weights = varFixed(~CHL),
+#                         data=all_fish_data,method = "REML",control=lmec)
+#exp_var
+lme_mass_exp_SST <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                        weights = varExp(form=~SST),
+                        data=all_fish_data,method = "REML",control=lmec)
+
+lme_mass_exp_CHL <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                        weights = varExp(form=~CHL),
+                        data=all_fish_data,method = "REML",control=lmec)
+#const_var
+lme_mass_const_SST <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                          weights = varConstPower(form=~SST),
+                          data=all_fish_data,method = "REML",control=lmec)
+
+lme_mass_const_CHL <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                          weights = varConstPower(form=~CHL),
+                          data=all_fish_data,method = "REML",control=lmec)
+#comb_var
+lme_mass_comb_sp_Cruise <- lme(mass_log10~SST*CHL,random = list(~1+CHL|Cruise,~1+SST|Species.Code),
+                               weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                               data=all_fish_data,method = "REML",control=lmec)
+
+anova_frame <- anova(mod_19,lme_mass_ident_sp,lme_mass_ident_Cruise,lme_mass_fix_SST,lme_mass_exp_SST,
+                     lme_mass_exp_CHL,lme_mass_const_SST,lme_mass_const_CHL,lme_mass_comb_sp_Cruise)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#combined is best
+summary(lme_mass_comb_sp_Cruise)
+qqnorm(resid(lme_mass_comb_sp_Cruise,type = "pearson"))
+qqline(resid(lme_mass_comb_sp_Cruise,type = "pearson")) 
+plot(factor(all_fish_data$Species.Code),resid(lme_mass_comb_sp_Cruise,type="pearson"))
+plot(factor(all_fish_data$Cruise),resid(lme_mass_comb_sp_Cruise,type="pearson"))
+
+#checking autocorrelation
+dists <- as.matrix(dist(cbind(all_fish_data$Lon,all_fish_data$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_comb_sp_Cruise,type = "normalized"),dists) 
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST_int_CHL <- lme(mass_log10~SST*CHL,random = list(~1|Cruise,~1+CHL|Species.Code),
+                    weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                    data=all_fish_data,method = "ML",control=lmec)
+
+lme_mass_SST_CHL <- lme(mass_log10~SST+CHL,random = list(~1|Cruise,~1+CHL|Species.Code),
+                weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                data=all_fish_data,method = "ML",control=lmec)
+
+lme_mass_CHL <- lme(mass_log10~CHL,random = list(~1|Cruise,~1+CHL|Species.Code),
+                    weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                    data=all_fish_data,method = "ML",control=lmec)
+
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1|Cruise,~1+CHL|Species.Code),
+                    weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                    data=all_fish_data,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1|Cruise,~1+CHL|Species.Code),
+                weights = varComb(varIdent(form =~ 1 | Cruise),varIdent(form =~ 1 | Species.Code)),
+                data=all_fish_data,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST_int_CHL,lme_mass_SST_CHL,lme_mass_CHL,lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+plot(lme_mass_SST)
+
+qqnorm(resid(lme_mass_SST,type = "pearson"))
+qqline(resid(lme_mass_SST,type = "pearson")) 
+plot(factor(all_fish_data$Species.Code),resid(lme_mass_SST,type="pearson"))
+plot(factor(all_fish_data$Cruise),resid(lme_mass_SST,type="pearson"))
+
+#checking autocorrelation
+dists <- as.matrix(dist(cbind(all_fish_data$Lon,all_fish_data$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+r.squaredGLMM(lme_mass_SST)
+
+# plotting the model partial residuals
+library(effects)
+model <- as.data.frame(effect("SST", lme_mass_SST, xlevels=list(SST=seq(min(all_fish_data$SST),max(all_fish_data$SST),length=100))))
+all_fish_data$resids <- resid(lme_mass_SST) + summary(lme_mass_SST)$tTable[1] + summary(lme_mass_SST)$tTable[2]*all_fish_data$SST
+
+data_abline <- as.data.frame(fixef(lme_mass_SST)[1])
+data_abline[,2] <- fixef(lme_mass_SST)[2]
+names(data_abline) <- c("Intercept","Slope")
+data_abline$xmin <- min(all_fish_data$SST)
+data_abline$xmax <- max(all_fish_data$SST)
+data_abline$ymax <- (data_abline$Intercept)+((data_abline$xmin)*data_abline$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline$ymin <- (data_abline$Intercept+(data_abline$xmax*data_abline$Slope)) #calculating the end point for the lines
+
+windows(record=TRUE)
+svg("Outputs/Plots/full_data_pred_mass_SST.svg",width=8,height = 6)
+ggplot(all_fish_data,aes(x=SST,y=resids))+
+  geom_point(size=3,alpha=0.3,pch=21,fill="grey",colour="black")+geom_segment(data=data_abline,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1.5,colour="black")+
+  geom_ribbon(data=model,aes(x=model$SST,ymin=model$lower,ymax=model$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(axis.text = element_text(size=26,colour="black"),axis.title.x = element_text(size=30),axis.title.y = element_text(size=30,vjust=1.5),legend.position="bottom",legend.text = element_text(size=15),legend.title = element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank())+scale_y_continuous(breaks=seq(-1,1,1),limits=c())+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))+guides(colour=guide_legend(nrow=1,byrow=TRUE))
+dev.off()
+
+### running mixed effects models by species ####
+windows(record=T)
+ggplot(all_fish_data,aes(y=mass_log10,x=SST))+geom_point()+geom_smooth(method="lm")+facet_wrap(~Species.Name,scales = "free")
+ggplot(all_fish_data,aes(y=mass_log10,x=CHL))+geom_point()+geom_smooth(method="lm")+facet_wrap(~Species.Name)
+
+species_df <- split(all_fish_data, all_fish_data$Species.Code) #split example dataset by group factor
+
+## ELC ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$ELC,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$ELC,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$ELC,method = "REML",control=lmec)
+# mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$ELC,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$ELC,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_gls)
+
+windows(record=T)
+
+plot(mod_gls)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(species_df$ELC$Cruise),resid(mod_gls,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- gls(mass_log10~SST,
+                         weights = varIdent(form= ~ 1 | Cruise),
+                         data=species_df$ELC,method = "REML",control=lmec) 
+lme_mass_fix_SST <- gls(mass_log10~SST,
+                         weights =  varFixed(~SST),
+                         data=species_df$ELC,method = "REML",control=lmec) 
+lme_mass_exp_SST <- gls(mass_log10~SST,
+                        weights =  varExp(form=~SST),
+                        data=species_df$ELC,method = "REML",control=lmec) 
+lme_mass_const_SST <- gls(mass_log10~SST,
+                        weights =  varConstPower(form=~SST),
+                        data=species_df$ELC,method = "REML",control=lmec) 
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,lme_mass_exp_SST,
+                     lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_ident_cruise)
+
+qqnorm(resid(lme_mass_ident_cruise,type = "pearson"))
+qqline(resid(lme_mass_ident_cruise,type = "pearson")) 
+plot(factor(species_df$ELC$Cruise),resid(lme_mass_ident_cruise,type="pearson"))
+plot(lme_mass_ident_cruise)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_ident_cruise), x = species_df$ELC$Lon, y = species_df$ELC$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_ident_cruise,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$ELC$Lon,species_df$ELC$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_ident_cruise,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- gls(mass_log10~SST,weights =  varIdent(form= ~ 1 | Cruise),
+                    data=species_df$ELC,method = "ML",control=lmec)
+
+lme_mass <- gls(mass_log10~1,weights =  varIdent(form= ~ 1 | Cruise),
+                data=species_df$ELC,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#best model is null model
+summary(lme_mass)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass), x = species_df$ELC$Lon, y = species_df$ELC$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$ELC$Lon,species_df$ELC$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+
+
+
+# plotting the data without a trendline
+windows(record=TRUE)
+
+svg("Outputs/Plots/Full_fish_data/full_data_ELC_mass_SST_square_svg.svg",width=6,height = 6)
+ggplot(species_df$ELC,aes(x=SST,y=mass_log10))+
+  geom_point(size=3,alpha=0.3,pch=21,fill="grey",colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(axis.text = element_text(size=26,colour="black"),axis.title.x = element_text(size=30),axis.title.y = element_text(size=30,vjust=1.5),legend.position="bottom",legend.text = element_text(size=15),legend.title = element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank())+scale_y_continuous(breaks=seq(-1,1,0.2),limits=c(0.5,1.1))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))+guides(colour=guide_legend(nrow=1,byrow=TRUE))
+dev.off()
+
+# #adding autocorrelation structure
+# species_df$PRM$Lat2 <- jitter(species_df$PRM$Lat,amount = 0.00000000001)
+# species_df$PRM$Lon2 <- jitter(species_df$PRM$Lon,amount= 0.00000000001)
+# 
+# model_no_auto <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                      weights =  varFixed(~CHL),
+#                      data=species_df$PRM,method = "REML",control=lmec)
+# 
+# model_corExp <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                     weights =  varFixed(~CHL),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+#                     data=species_df$PRM,method = "REML",control=lmec)
+# 
+# model_corGaus <-lme(mass_log10~SST,random = list(~1|Cruise),
+#                     weights =  varFixed(~CHL),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+#                     data=species_df$PRM,method = "REML",control=lmec)
+# 
+# # model_corLin <- lme(mass_log10~SST,random = list(~1|Cruise),
+# #                     weights =  varFixed(~CHL),
+# #                     correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+# #                     data=species_df$PRM,method = "REML",control=lmec)
+# 
+# model_corSpher <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                       weights =  varFixed(~CHL),
+#                       correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+#                       data=species_df$PRM,method = "REML",control=lmec)
+# 
+# model_corRat <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                     weights =  varFixed(~CHL),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+#                     data=species_df$PRM,method = "REML",control=lmec)
+# 
+# anova_frame <- anova(model_no_auto,model_corExp,model_corGaus,model_corSpher,model_corRat) #corLin didnt converge
+# anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+## ELN ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$ELN,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$ELN,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$ELN,method = "REML",control=lmec)
+mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$ELN,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$ELN,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_3))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_1)
+
+windows(record=T)
+qqnorm(resid(mod_1,type = "pearson"))
+qqline(resid(mod_1,type = "pearson")) 
+plot(factor(species_df$ELN$Cruise),resid(mod_1,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- lme(mass_log10~SST,random = list(~1|Cruise),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$ELN,method = "REML",control=lmec) 
+lme_mass_fix_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varFixed(~SST),
+                        data=species_df$ELN,method = "REML",control=lmec) 
+lme_mass_exp_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varExp(form=~SST),
+                        data=species_df$ELN,method = "REML",control=lmec) 
+lme_mass_const_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$ELN,method = "REML",control=lmec) 
+anova_frame <- anova(mod_1,lme_mass_ident_cruise,lme_mass_fix_SST,lme_mass_exp_SST,
+                     lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_const_SST)
+
+qqnorm(resid(lme_mass_const_SST,type = "pearson"))
+qqline(resid(lme_mass_const_SST,type = "pearson")) 
+plot(lme_mass_const_SST)
+plot(factor(species_df$ELN$Cruise),resid(lme_mass_const_SST,type="pearson"))
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    # correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$ELN,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1|Cruise),
+                weights =  varConstPower(form=~SST),
+                # correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                data=species_df$ELN,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$ELN$Lon, y = species_df$ELN$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$ELN$Lon,species_df$ELN$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+summary(lme_mass_SST)
+
+#adding in autocorrelation structure
+species_df$ELN$Lat2 <- jitter(species_df$ELN$Lat,amount = 0.00000000001)
+species_df$ELN$Lon2 <- jitter(species_df$ELN$Lon,amount= 0.00000000001)
+
+model_no_auto <- lme(mass_log10~SST,random = list(~1|Cruise),
+                     weights =  varConstPower(form=~SST),
+                     data=species_df$ELN,method = "REML",control=lmec)
+start_time <- Sys.time()
+model_corExp <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$ELN,method = "REML",control=lmec)
+end_time <- Sys.time()
+end_time-start_time
+
+# start_time <- Sys.time()
+# model_corGaus <-lme(mass_log10~SST,random = list(~1|Cruise),
+#                     weights =  varConstPower(form=~SST),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+#                     data=species_df$ELN,method = "REML",control=lmec)
+# end_time <- Sys.time()
+# end_time-start_time
+
+# start_time <- Sys.time()
+# model_corLin <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                     weights =  varConstPower(form=~SST),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+#                     data=species_df$ELN,method = "REML",control=lmec)
+# end_time <- Sys.time()
+# end_time-start_time
+
+start_time <- Sys.time()
+model_corSpher <- lme(mass_log10~SST,random = list(~1|Cruise),
+                      weights =  varConstPower(form=~SST),
+                      correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                      data=species_df$ELN,method = "REML",control=lmec)
+end_time <- Sys.time()
+end_time-start_time
+
+start_time <- Sys.time()
+model_corRat <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$ELN,method = "REML",control=lmec)
+end_time <- Sys.time()
+end_time-start_time
+
+anova_frame <- anova(model_no_auto,model_corExp,model_corSpher,model_corRat)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(model_corRat)
+
+
+
+
+
+
+#investigating interactions
+library(sjPlot)
+library(sjmisc)
+library(ggplot2)
+library(glmmTMB)
+library(RColorBrewer)
+library(effects)
+
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+
+model <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),
+             weights =  varConstPower(form=~SST),
+             data=species_df$ELN,method = "REML",control=lmec)
+
+windows(record=T)
+#log scale
+summary(model)
+
+brewer.pal(7,"Dark2")
+ef1 <- as.data.frame(effect("SST", model, xlevels=list(CHL=c(min(species_df$ELN$CHL),max(species_df$ELN$CHL)))))
+
+colours <- c("#1B9E77","#D95F02")
+
+ggplot(ef1, aes(x=SST, y=fit,group=CHL))+
+  geom_jitter(species_df$ELN,mapping=aes(y=mass_log10,x=SST,colour=CHL),size=3,alpha=0.8,width=0.1)+
+scale_color_gradient(low="darkgreen",high="lightgreen",breaks=c(min(species_df$ELN$CHL),max(species_df$ELN$CHL)))+
+geom_smooth(method="lm",size=1.2,alpha=0.8,aes(colour=CHL))+
+  scale_fill_manual(labels = c("0.4", "2.2"),values = c("darkgreen","lightgreen"))+
+  geom_ribbon(aes(ymin=fit-se, ymax=fit+se, fill=as.factor(CHL)),alpha=0.3,show.legend = F)
+  
+## GYF ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$GYF,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$GYF,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$GYF,method = "REML",control=lmec)
+# mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$GYF,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$GYF,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_1)
+
+windows(record=T)
+qqnorm(resid(mod_1,type = "pearson"))
+qqline(resid(mod_1,type = "pearson")) 
+plot(factor(species_df$GYF$Cruise),resid(mod_1,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(mod_1), x = species_df$GYF$Lon, y = species_df$GYF$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(mod_1))
+
+dists <- as.matrix(dist(cbind(species_df$GYF$Lon,species_df$GYF$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(mod_1,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- lme(mass_log10~SST,random = list(~1|Cruise),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$GYF,method = "REML",control=lmec) 
+lme_mass_fix_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varFixed(~SST),
+                        data=species_df$GYF,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varExp(form=~SST),
+                        data=species_df$GYF,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$GYF,method = "REML",control=lmec)
+
+anova_frame <- anova(mod_1,lme_mass_ident_cruise,lme_mass_fix_SST,lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+plot(mod_1)
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    # correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$GYF,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1|Cruise),
+                # correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                data=species_df$GYF,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$GYF$Lon, y = species_df$GYF$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST))
+
+dists <- as.matrix(dist(cbind(species_df$GYF$Lon,species_df$GYF$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+
+#adding autocorrelation structure
+species_df$GYF$Lat2 <- jitter(species_df$GYF$Lat,amount = 0.00000000001)
+species_df$GYF$Lon2 <- jitter(species_df$GYF$Lon,amount= 0.00000000001)
+
+model_no_auto <- lme(mass_log10~SST,random = list(~1|Cruise),
+                     data=species_df$GYF,method = "REML",control=lmec)
+
+model_corExp <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$GYF,method = "REML",control=lmec)
+
+model_corGaus <-lme(mass_log10~SST,random = list(~1|Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+                    data=species_df$GYF,method = "REML",control=lmec)
+
+# model_corLin <- lme(mass_log10~SST,random = list(~1|Cruise),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+#                     data=species_df$GYF,method = "REML",control=lmec)
+
+model_corSpher <- lme(mass_log10~SST,random = list(~1|Cruise),
+                      correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                      data=species_df$GYF,method = "REML",control=lmec)
+
+model_corRat <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$GYF,method = "REML",control=lmec)
+
+anova_frame <- anova(model_no_auto,model_corExp,model_corGaus,model_corSpher,model_corRat) #corLin didnt converge
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(model_corExp)
+
+## GYN ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+#trying excluding the really small values
+# species_df$GYN <- species_df$GYN[species_df$GYN$mass_log10>0,]
+mod_gls <- gls(mass_log10~SST,data=species_df$GYN,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$GYN,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$GYN,method = "REML",control=lmec)
+# mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$GYN,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$GYN,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_gls)
+
+windows(record=T)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(species_df$GYN$Cruise),resid(mod_gls,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(mod_gls), x = species_df$GYN$Lon, y = species_df$GYN$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(mod_gls))
+
+dists <- as.matrix(dist(cbind(species_df$GYN$Lon,species_df$GYN$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(mod_gls,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- gls(mass_log10~SST,
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$GYN,method = "REML",control=lmec) 
+lme_mass_fix_SST <- gls(mass_log10~SST,
+                        weights =  varFixed(~SST),
+                        data=species_df$GYN,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- gls(mass_log10~SST,
+                        weights =  varExp(form=~SST),
+                        data=species_df$GYN,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- gls(mass_log10~SST,
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$GYN,method = "REML",control=lmec)
+
+
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_exp_SST)
+
+qqnorm(resid(lme_mass_exp_SST,type = "pearson"))
+qqline(resid(lme_mass_exp_SST,type = "pearson")) 
+plot(factor(species_df$GYN$Cruise),resid(lme_mass_exp_SST,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_exp_SST), x = species_df$GYN$Lon, y = species_df$GYN$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_exp_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$GYN$Lon,species_df$GYN$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_exp_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- gls(mass_log10~SST,
+                    weights = varExp(form=~SST),
+                    data=species_df$GYN,method = "ML",control=lmec)
+
+lme_mass <- gls(mass_log10~1,
+                weights = varExp(form=~SST),
+                data=species_df$GYN,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$GYN$Lon, y = species_df$GYN$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$GYN$Lon,species_df$GYN$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+
+# #investigating interactions
+# library(sjPlot)
+# library(sjmisc)
+# library(ggplot2)
+# library(glmmTMB)
+# library(RColorBrewer)
+# library(effects)
+# 
+# lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+# 
+# model <- gls(mass_log10~SST*CHL,
+#              weights =  varExp(form=~SST),
+#              data=species_df$GYN,method = "ML",control=lmec)
+# 
+# windows(record=T)
+# ef1 <- as.data.frame(effect("SST*CHL", model, xlevels=list(CHL=c(min(species_df$GYN$CHL),max(species_df$GYN$CHL)))))
+# 
+# colours <- c("#1B9E77","#D95F02")
+# 
+# ggplot(ef1, aes(x=SST, y=fit,group=CHL))+
+#   geom_jitter(species_df$GYN,mapping=aes(y=mass_log10,x=SST,colour=CHL),size=3,alpha=0.8,width=0.1)+
+#   scale_color_gradient(low="darkgreen",high="lightgreen",breaks=c(min(species_df$GYN$CHL),max(species_df$GYN$CHL)))+
+#   geom_smooth(method="lm",size=1.2,alpha=0.8,aes(colour=CHL))+
+#   scale_fill_manual(labels = c("0.4", "2.2"),values = c("darkgreen","lightgreen"))+
+#   geom_ribbon(aes(ymin=fit-se, ymax=fit+se, fill=as.factor(CHL)),alpha=0.3,show.legend = F)
+# 
+
+
+## GYR ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$GYR,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$GYR,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$GYR,method = "REML",control=lmec)
+mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$GYR,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$GYR,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_3))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_1)
+
+windows(record=T)
+qqnorm(resid(mod_1,type = "pearson"))
+qqline(resid(mod_1,type = "pearson")) 
+plot(factor(species_df$GYR$Cruise),resid(mod_1,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- lme(mass_log10~SST,random = list(~1|Cruise),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$GYR,method = "REML",control=lmec) 
+
+lme_mass_fix_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varFixed(~SST),
+                        data=species_df$GYR,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varExp(form=~SST),
+                        data=species_df$GYR,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$GYR,method = "REML",control=lmec)
+
+
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_exp_SST)
+
+qqnorm(resid(lme_mass_exp_SST,type = "pearson"))
+qqline(resid(lme_mass_exp_SST,type = "pearson")) 
+plot(factor(species_df$GYR$Cruise),resid(lme_mass_exp_SST,type="pearson"))
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+                    # correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    weights =  varExp(form=~SST),
+                    data=species_df$GYR,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1+SST|Cruise),
+                # correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                weights =  varExp(form=~SST),
+                data=species_df$GYR,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$GYR$Lon, y = species_df$GYR$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$GYR$Lon,species_df$GYR$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+
+#adding autocorrelation structure
+species_df$GYR$Lat2 <- jitter(species_df$GYR$Lat,amount = 0.00000000001)
+species_df$GYR$Lon2 <- jitter(species_df$GYR$Lon,amount= 0.00000000001)
+
+model_no_auto <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+                     weights =  varExp(form=~SST),
+                     data=species_df$GYR,method = "REML",control=lmec)
+
+model_corExp <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$GYR,method = "REML",control=lmec)
+
+model_corGaus <-lme(mass_log10~SST,random = list(~1+SST|Cruise),
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+                    data=species_df$GYR,method = "REML",control=lmec)
+
+# model_corLin <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+#                     weights =  varExp(form=~SST),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+#                     data=species_df$GYR,method = "REML",control=lmec)
+
+# model_corSpher <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+#                       weights =  varExp(form=~SST),
+#                       correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+#                       data=species_df$GYR,method = "REML",control=lmec)
+
+# model_corRat <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+#                     weights =  varExp(form=~SST),
+#                     correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+#                     data=species_df$GYR,method = "REML",control=lmec)
+
+anova_frame <- anova(model_no_auto,model_corExp,model_corGaus)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+
+
+## KRA ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$KRA,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$KRA,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+CHL|Cruise),data=species_df$KRA,method = "REML",control=lmec)
+# mod_3 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$KRA,method = "REML",control=lmec)
+# mod_4 <- lme(mass_log10~SST,random = list(~1+SST+CHL|Cruise),data=species_df$KRA,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_gls)
+
+windows(record=T)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(species_df$KRA$Cruise),resid(mod_gls,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- gls(mass_log10~SST,
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$KRA,method = "REML",control=lmec) 
+lme_mass_fix_SST <- gls(mass_log10~SST,
+                        weights =  varFixed(~SST),
+                        data=species_df$KRA,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- gls(mass_log10~SST,
+                        weights =  varExp(form=~SST),
+                        data=species_df$KRA,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- gls(mass_log10~SST,
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$KRA,method = "REML",control=lmec)
+
+
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_ident_cruise)
+
+plot(lme_mass_ident_cruise)
+qqnorm(resid(lme_mass_ident_cruise,type = "pearson"))
+qqline(resid(lme_mass_ident_cruise,type = "pearson")) 
+plot(factor(species_df$KRA$Cruise),resid(lme_mass_ident_cruise,type="pearson"))
+
+#now comparing different fixed effects structures with ML:
+
+lme_mass_SST <- gls(mass_log10~SST,
+                    weights = varIdent(form= ~ 1 | Cruise),
+                    # correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                    data=species_df$KRA,method = "ML",control=lmec)
+
+lme_mass <- gls(mass_log10~1,
+                weights = varIdent(form= ~ 1 | Cruise),
+                # correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                data=species_df$KRA,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+#checking autocorrelation structure
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+dists <- as.matrix(dist(cbind(species_df$KRA$Lon,species_df$KRA$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) 
+
+
+#adding autocorrelation structure
+species_df$KRA$Lat2 <- jitter(species_df$KRA$Lat,amount = 0.00000000001)
+species_df$KRA$Lon2 <- jitter(species_df$KRA$Lon,amount= 0.00000000001)
+
+model_no_auto <- gls(mass_log10~SST,
+                     weights = varIdent(form= ~ 1 | Cruise),
+                     data=species_df$KRA,method = "REML",control=lmec)
+
+model_corExp <- gls(mass_log10~SST,
+                    weights = varIdent(form= ~ 1 | Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$KRA,method = "REML",control=lmec)
+print("done")
+model_corGaus <-gls(mass_log10~SST,
+                    weights = varIdent(form= ~ 1 | Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+                    data=species_df$KRA,method = "REML",control=lmec)
+print("done")
+
+model_corLin <- gls(mass_log10~SST,
+                    weights = varIdent(form= ~ 1 | Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+                    data=species_df$KRA,method = "REML",control=lmec)
+print("done")
+
+model_corSpher <- gls(mass_log10~SST,
+                      weights = varIdent(form= ~ 1 | Cruise),
+                      correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                      data=species_df$KRA,method = "REML",control=lmec)
+print("done")
+
+model_corRat <- gls(mass_log10~SST,
+                    weights = varIdent(form= ~ 1 | Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$KRA,method = "REML",control=lmec)
+
+anova_frame <- anova(model_no_auto,model_corExp,model_corGaus,model_corSpher,model_corRat) #corLin didnt converge
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(model_corSpher)
+
+## LAC ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$LAC,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$LAC,method = "REML",control=lmec) 
+mod_2 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$LAC,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1,mod_2))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_gls)
+
+windows(record=T)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(species_df$LAC$Cruise),resid(mod_gls,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- gls(mass_log10~SST,
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$LAC,method = "REML",control=lmec) 
+lme_mass_fix_SST <- gls(mass_log10~SST,
+                        weights =  varFixed(~SST),
+                        data=species_df$LAC,method = "REML",control=lmec) 
+lme_mass_exp_SST <- gls(mass_log10~SST,
+                        weights =  varExp(form=~SST),
+                        data=species_df$LAC,method = "REML",control=lmec) 
+lme_mass_const_SST <- gls(mass_log10~SST,
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$LAC,method = "REML",control=lmec)
+
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_exp_SST)
+
+qqnorm(resid(lme_mass_exp_SST,type = "pearson"))
+qqline(resid(lme_mass_exp_SST,type = "pearson")) 
+plot(factor(species_df$LAC$Cruise),resid(lme_mass_exp_SST,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_exp_SST), x = species_df$LAC$Lon, y = species_df$LAC$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_exp_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$LAC$Lon,species_df$LAC$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_exp_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#adding autocorrelation structure
+species_df$LAC$Lat2 <- jitter(species_df$LAC$Lat,amount = 0.00000000001)
+species_df$LAC$Lon2 <- jitter(species_df$LAC$Lon,amount= 0.00000000001)
+
+model_no_auto <- gls(mass_log10~SST,
+                     weights =  varExp(form=~SST),
+                     data=species_df$LAC,method = "REML",control=lmec)
+
+model_corExp <- gls(mass_log10~SST,
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$LAC,method = "REML",control=lmec)
+print("done")
+model_corGaus <-gls(mass_log10~SST,
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "gaussian",nugget=TRUE),
+                    data=species_df$LAC,method = "REML",control=lmec)
+print("done")
+
+model_corLin <- gls(mass_log10~SST,
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "linear",nugget=TRUE),
+                    data=species_df$LAC,method = "REML",control=lmec)
+print("done")
+
+model_corSpher <- gls(mass_log10~SST,
+                      weights =  varExp(form=~SST),
+                      correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                      data=species_df$LAC,method = "REML",control=lmec)
+print("done")
+
+model_corRat <- gls(mass_log10~SST,
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$LAC,method = "REML",control=lmec)
+
+anova_frame <- anova(model_no_auto,model_corExp,model_corGaus,model_corLin,model_corSpher,model_corRat) #corLin didnt converge
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(model_corExp)
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- gls(mass_log10~SST,
+                    weights =  varExp(form=~SST),
+                    data=species_df$LAC,method = "ML",control=lmec)
+
+lme_mass <- gls(mass_log10~1,
+                weights =  varExp(form=~SST),
+                data=species_df$LAC,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#best model is null model
+plot(Variogram(lme_mass,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$LAC$Lon,species_df$LAC$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+summary(lme_mass)
+
+
+
+## PRE ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$PRE,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$PRE,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$PRE,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_1)
+
+windows(record=T)
+qqnorm(resid(mod_1,type = "pearson"))
+qqline(resid(mod_1,type = "pearson")) 
+plot(factor(species_df$PRE$Cruise),resid(mod_1,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- lme(mass_log10~SST,random = list(~1|Cruise),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$PRE,method = "REML",control=lmec) 
+lme_mass_fix_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varFixed(~SST),
+                        data=species_df$PRE,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varExp(form=~SST),
+                        data=species_df$PRE,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$PRE,method = "REML",control=lmec)
+
+
+anova_frame <- anova(mod_1,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_const_SST)
+
+qqnorm(resid(lme_mass_const_SST,type = "pearson"))
+qqline(resid(lme_mass_const_SST,type = "pearson")) 
+plot(factor(species_df$PRE$Cruise),resid(lme_mass_const_SST,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_const_SST), x = species_df$PRE$Lon, y = species_df$PRE$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_const_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRE$Lon,species_df$PRE$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_const_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    data=species_df$PRE,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1|Cruise),
+                weights =  varConstPower(form=~SST),
+                data=species_df$PRE,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#best model is null model
+summary(lme_mass_SST)
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$PRE$Lon, y = species_df$PRE$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRE$Lon,species_df$PRE$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+
+
+
+## PRM ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$PRM,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$PRM,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$PRM,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_1)
+
+windows(record=T)
+qqnorm(resid(mod_1,type = "pearson"))
+qqline(resid(mod_1,type = "pearson")) 
+plot(factor(species_df$PRM$Cruise),resid(mod_1,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- lme(mass_log10~SST,random = list(~1|Cruise),
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$PRM,method = "REML",control=lmec) 
+lme_mass_fix_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varFixed(~SST),
+                        data=species_df$PRM,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                        weights =  varExp(form=~SST),
+                        data=species_df$PRM,method = "REML",control=lmec) 
+
+lme_mass_const_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                          weights =  varConstPower(form=~SST),
+                          data=species_df$PRM,method = "REML",control=lmec)
+
+anova_frame <- anova(mod_1,lme_mass_ident_cruise,lme_mass_fix_SST,lme_mass_exp_SST,lme_mass_const_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_const_SST)
+
+plot(lme_mass_const_SST)
+qqnorm(resid(lme_mass_const_SST,type = "pearson"))
+qqline(resid(lme_mass_const_SST,type = "pearson")) 
+plot(factor(species_df$PRM$Cruise),resid(lme_mass_const_SST,type="pearson"))
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_const_SST), x = species_df$PRM$Lon, y = species_df$PRM$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_const_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRM$Lon,species_df$PRM$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_const_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    data=species_df$PRM,method = "ML",control=lmec)
+
+lme_mass <- lme(mass_log10~1,random = list(~1|Cruise),
+                weights =  varConstPower(form=~SST),
+                data=species_df$PRM,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$PRM$Lon, y = species_df$PRM$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRM$Lon,species_df$PRM$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+summary(lme_mass_SST)
+
+
+
+
+
+## PRY ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+mod_gls <- gls(mass_log10~SST,data=species_df$PRY,method="REML") 
+mod_1 <- lme(mass_log10~SST,random = list(~1|Cruise),data=species_df$PRY,method = "REML",control=lmec) 
+# mod_2 <- lme(mass_log10~SST,random = list(~1+SST|Cruise),data=species_df$PRY,method = "REML",control=lmec)
+
+anova_frame <- as.data.frame(anova(mod_gls,mod_1))
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(mod_gls)
+
+windows(record=T)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(species_df$PRY$Cruise),resid(mod_gls,type="pearson"))
+
+#Adding weights
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_cruise <- gls(mass_log10~SST,
+                             weights = varIdent(form= ~ 1 | Cruise),
+                             data=species_df$PRY,method = "REML",control=lmec) 
+lme_mass_fix_SST <- gls(mass_log10~SST,
+                        weights =  varFixed(~SST),
+                        data=species_df$PRY,method = "REML",control=lmec) 
+
+lme_mass_exp_SST <- gls(mass_log10~SST,
+                        weights =  varExp(form=~SST),
+                        data=species_df$PRY,method = "REML",control=lmec) 
+
+# lme_mass_const_SST <- gls(mass_log10~SST,
+#                           weights =  varConstPower(form=~SST),
+#                           data=species_df$PRY,method = "REML",control=lmec)
+
+
+anova_frame <- anova(mod_gls,lme_mass_ident_cruise,lme_mass_fix_SST,
+                     lme_mass_exp_SST)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_fix_SST)
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_fix_SST), x = species_df$PRY$Lon, y = species_df$PRY$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_fix_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRY$Lon,species_df$PRY$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_fix_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST <- gls(mass_log10~SST,weights =  varExp(form=~SST),
+                    data=species_df$PRY,method = "ML",control=lmec)
+
+lme_mass <- gls(mass_log10~1,weights =  varExp(form=~SST),
+                data=species_df$PRY,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+#checking for autocorrelation
+temp_data = data.frame(error = residuals(lme_mass_SST), x = species_df$PRY$Lon, y = species_df$PRY$Lat)
+coordinates(temp_data) <- c("x","y") 
+bubble(temp_data, "error", col = c("black","grey"),
+       main = "Residuals", xlab = "X-coordinates", ylab = "Y-coordinates")
+plot(Variogram(lme_mass_SST,resType = "normalized"))
+
+dists <- as.matrix(dist(cbind(species_df$PRY$Lon,species_df$PRY$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#best model is null model
+summary(lme_mass_SST)
+
+
+
+
+
+
+
+#### plotting the species models ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+
+ELC_model <- gls(mass_log10~1,weights =  varIdent(form= ~ 1 | Cruise),
+                data=species_df$ELC,method = "ML",control=lmec)
+
+
+species_df$ELN$Lat2 <- jitter(species_df$ELN$Lat,amount = 0.00000000001)
+species_df$ELN$Lon2 <- jitter(species_df$ELN$Lon,amount= 0.00000000001)
+ELN_model <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "rational",nugget=TRUE),
+                    data=species_df$ELN,method = "REML",control=lmec)
+
+species_df$GYF$Lat2 <- jitter(species_df$GYF$Lat,amount = 0.00000000001)
+species_df$GYF$Lon2 <- jitter(species_df$GYF$Lon,amount= 0.00000000001)
+GYF_model <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$GYF,method = "REML",control=lmec)
+
+GYN_model <- gls(mass_log10~SST,
+                    weights = varExp(form=~SST),
+                    data=species_df$GYN,method = "ML",control=lmec)
+
+species_df$GYR$Lat2 <- jitter(species_df$GYR$Lat,amount = 0.00000000001)
+species_df$GYR$Lon2 <- jitter(species_df$GYR$Lon,amount= 0.00000000001)
+GYR_model <- lme(mass_log10~SST,random = list(~1+SST|Cruise),
+                    weights =  varExp(form=~SST),
+                    correlation = corSpatial(form=~ Lon2+Lat2,type = "exponential",nugget=TRUE),
+                    data=species_df$GYR,method = "REML",control=lmec)
+
+species_df$KRA$Lat2 <- jitter(species_df$KRA$Lat,amount = 0.00000000001)
+species_df$KRA$Lon2 <- jitter(species_df$KRA$Lon,amount= 0.00000000001)
+
+KRA_model <- gls(mass_log10~SST,
+                      weights = varIdent(form= ~ 1 | Cruise),
+                      correlation = corSpatial(form=~ Lon2+Lat2,type = "spherical",nugget=TRUE),
+                      data=species_df$KRA,method = "REML",control=lmec)
+
+LAC_model <- gls(mass_log10~1,
+                weights =  varExp(form=~SST),
+                data=species_df$LAC,method = "ML",control=lmec)
+
+PRE_model <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    data=species_df$PRE,method = "ML",control=lmec)
+
+PRM_model <- lme(mass_log10~SST,random = list(~1|Cruise),
+                    weights =  varConstPower(form=~SST),
+                    data=species_df$PRM,method = "ML",control=lmec)
+
+PRY_model <- gls(mass_log10~SST,weights =  varExp(form=~SST),
+                    data=species_df$PRY,method = "ML",control=lmec)
+
+
+#for LME models
+windows(record=TRUE)
+library(effects)
+
+#ELN
+ELN_model_frame <- as.data.frame(effect("SST", ELN_model, xlevels=list(SST=seq(min(species_df$ELN$SST),max(species_df$ELN$SST),length=100))))
+species_df$ELN$resids <- resid(ELN_model) + summary(ELN_model)$tTable[1] + summary(ELN_model)$tTable[2]*species_df$ELN$SST
+
+data_abline_ELN <- as.data.frame(fixef(ELN_model)[1])
+data_abline_ELN[,2] <- fixef(ELN_model)[2]
+names(data_abline_ELN) <- c("Intercept","Slope")
+data_abline_ELN$xmin <- min(species_df$ELN$SST)
+data_abline_ELN$xmax <- max(species_df$ELN$SST)
+data_abline_ELN$ymax <- (data_abline_ELN$Intercept)+((data_abline_ELN$xmin)*data_abline_ELN$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline_ELN$ymin <- (data_abline_ELN$Intercept+(data_abline_ELN$xmax*data_abline_ELN$Slope)) #calculating the end point for the lines
+
+ELN_plot <- ggplot(species_df$ELN,aes(x=SST,y=resids))+labs(title = "ELN")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+geom_ribbon(data=ELN_model_frame,aes(x=ELN_model_frame$SST,ymin=ELN_model_frame$lower,ymax=ELN_model_frame$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=data_abline_ELN,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                         axis.title =element_blank(),axis.text = element_text(size=15,colour="black"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank(),plot.margin = unit(c(0,0.5,0,2), "lines"))+
+  scale_y_continuous(breaks=seq(-0.5,2,1),limits=c(-1,1.5))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+#GYF
+GYF_model_frame <- as.data.frame(effect("SST", GYF_model, xlevels=list(SST=seq(min(species_df$GYF$SST),max(species_df$GYF$SST),length=100))))
+species_df$GYF$resids <- resid(GYF_model) + summary(GYF_model)$tTable[1] + summary(GYF_model)$tTable[2]*species_df$GYF$SST
+
+data_abline_GYF <- as.data.frame(fixef(GYF_model)[1])
+data_abline_GYF[,2] <- fixef(GYF_model)[2]
+names(data_abline_GYF) <- c("Intercept","Slope")
+data_abline_GYF$xmin <- min(species_df$GYF$SST)
+data_abline_GYF$xmax <- max(species_df$GYF$SST)
+data_abline_GYF$ymax <- (data_abline_GYF$Intercept)+((data_abline_GYF$xmin)*data_abline_GYF$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline_GYF$ymin <- (data_abline_GYF$Intercept+(data_abline_GYF$xmax*data_abline_GYF$Slope)) #calculating the end point for the lines
+
+GYF_plot <- ggplot(species_df$GYF,aes(x=SST,y=resids))+labs(title = "GYF")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+geom_ribbon(data=GYF_model_frame,aes(x=GYF_model_frame$SST,ymin=GYF_model_frame$lower,ymax=GYF_model_frame$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=data_abline_GYF,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                         axis.title =element_blank(),axis.text = element_text(size=15,colour="black"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank(),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-1,1,0.5),limits=c())+scale_x_continuous(breaks=seq(-2,8,2),limits=c(0,8))
+
+
+#GYR
+GYR_model_frame <- as.data.frame(effect("SST", GYR_model, xlevels=list(SST=seq(min(species_df$GYR$SST),max(species_df$GYR$SST),length=100))))
+species_df$GYR$resids <- resid(GYR_model) + summary(GYR_model)$tTable[1] + summary(GYR_model)$tTable[2]*species_df$GYR$SST
+
+data_abline_GYR <- as.data.frame(fixef(GYR_model)[1])
+data_abline_GYR[,2] <- fixef(GYR_model)[2]
+names(data_abline_GYR) <- c("Intercept","Slope")
+data_abline_GYR$xmin <- min(species_df$GYR$SST)
+data_abline_GYR$xmax <- max(species_df$GYR$SST)
+data_abline_GYR$ymax <- (data_abline_GYR$Intercept)+((data_abline_GYR$xmin)*data_abline_GYR$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline_GYR$ymin <- (data_abline_GYR$Intercept+(data_abline_GYR$xmax*data_abline_GYR$Slope)) #calculating the end point for the lines
+
+GYR_plot <- ggplot(species_df$GYR,aes(x=SST,y=resids))+labs(title = "GYR")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+geom_ribbon(data=GYR_model_frame,aes(x=GYR_model_frame$SST,ymin=GYR_model_frame$lower,ymax=GYR_model_frame$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=data_abline_GYR,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                         axis.title =element_blank(),axis.text = element_text(size=15,colour="black"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank(),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-0.5,2,1),limits=c())+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+
+#PRE
+PRE_model_frame <- as.data.frame(effect("SST", PRE_model, xlevels=list(SST=seq(min(species_df$PRE$SST),max(species_df$PRE$SST),length=100))))
+species_df$PRE$resids <- resid(PRE_model) + summary(PRE_model)$tTable[1] + summary(PRE_model)$tTable[2]*species_df$PRE$SST
+
+data_abline_PRE <- as.data.frame(fixef(PRE_model)[1])
+data_abline_PRE[,2] <- fixef(PRE_model)[2]
+names(data_abline_PRE) <- c("Intercept","Slope")
+data_abline_PRE$xmin <- min(species_df$PRE$SST)
+data_abline_PRE$xmax <- max(species_df$PRE$SST)
+data_abline_PRE$ymax <- (data_abline_PRE$Intercept)+((data_abline_PRE$xmin)*data_abline_PRE$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline_PRE$ymin <- (data_abline_PRE$Intercept+(data_abline_PRE$xmax*data_abline_PRE$Slope)) #calculating the end point for the lines
+
+PRE_plot <- ggplot(species_df$PRE,aes(x=SST,y=resids))+labs(title = "PRE")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+geom_ribbon(data=PRE_model_frame,aes(x=PRE_model_frame$SST,ymin=PRE_model_frame$lower,ymax=PRE_model_frame$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=data_abline_PRE,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                         axis.title =element_blank(),axis.text = element_text(size=15,colour="black"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank(),plot.margin = unit(c(0,0.5,0,2), "lines"))+
+  scale_y_continuous(breaks=seq(-1,1,0.5),limits=c(-1.1,0.5))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+#PRM
+PRM_model_frame <- as.data.frame(effect("SST", PRM_model, xlevels=list(SST=seq(min(species_df$PRM$SST),max(species_df$PRM$SST),length=100))))
+species_df$PRM$resids <- resid(PRM_model) + summary(PRM_model)$tTable[1] + summary(PRM_model)$tTable[2]*species_df$PRM$SST
+
+data_abline_PRM <- as.data.frame(fixef(PRM_model)[1])
+data_abline_PRM[,2] <- fixef(PRM_model)[2]
+names(data_abline_PRM) <- c("Intercept","Slope")
+data_abline_PRM$xmin <- min(species_df$PRM$SST)
+data_abline_PRM$xmax <- max(species_df$PRM$SST)
+data_abline_PRM$ymax <- (data_abline_PRM$Intercept)+((data_abline_PRM$xmin)*data_abline_PRM$Slope) #adjusting intercept to be correct for SST of -0.16
+data_abline_PRM$ymin <- (data_abline_PRM$Intercept+(data_abline_PRM$xmax*data_abline_PRM$Slope)) #calculating the end point for the lines
+
+PRM_plot <- ggplot(species_df$PRM,aes(x=SST,y=resids))+labs(title = "PRM")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+geom_ribbon(data=PRM_model_frame,aes(x=PRM_model_frame$SST,ymin=PRM_model_frame$lower,ymax=PRM_model_frame$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=data_abline_PRM,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(y="Predator mass",x= "SST (°C)")+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                           axis.title =element_blank(),axis.text = element_text(size=15,colour="black"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),legend.key = element_blank(),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-1,1,0.5),limits=c(-1,0.5))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+#for GLS models
+#ELC
+ELC_plot <- ggplot(species_df$ELC,aes(x=SST,y=mass_log10))+labs(title = "ELC")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+
+  theme_bw()+ labs(x="SST (°C)",y="Predator mass")+
+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.title =element_blank(),axis.text = element_text(size=15,colour="black"),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-1,1,0.5),limits=c(0.5,1))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+#GYN
+
+abline_GYN <- as.data.frame(matrix(ncol=6))
+names(abline_GYN) <- c("Intercept","Slope","xmin","xmax","ymin","ymax")
+abline_GYN$Intercept <- GYN_model$coefficients[1]
+abline_GYN$Slope <- GYN_model$coefficients[2]
+abline_GYN$xmin <- min(species_df$GYN$SST)
+abline_GYN$xmax <- max(species_df$GYN$SST)
+abline_GYN$ymin <- (abline_GYN$Intercept+(abline_GYN$xmax*abline_GYN$Slope)) 
+abline_GYN$ymax <- (abline_GYN$Intercept)+((abline_GYN$xmin)*abline_GYN$Slope) 
+
+species_df$GYN$resids <- resid(GYN_model) + summary(GYN_model)$tTable[1] + summary(GYN_model)$tTable[2]*species_df$GYN$SST
+partial_model_GYN <- data.frame(effect("SST", GYN_model, xlevels=list(SST=seq(min(species_df$GYN$SST),max(species_df$GYN$SST),length=100))))
+
+GYN_plot <- ggplot(species_df$GYN,aes(x=SST,y=resids))+labs(title = "GYN")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+
+  geom_ribbon(data=partial_model_GYN,aes(x=partial_model_GYN$SST,ymin=partial_model_GYN$lower,ymax=partial_model_GYN$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=abline_GYN,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+ labs(x="SST (°C)",y="Predator mass")+
+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.title =element_blank(),axis.text = element_text(size=15,colour="black"),plot.margin = unit(c(0,0.5,0,2), "lines"))+
+  scale_y_continuous(breaks=seq(-0.5,1.5,1),limits = c())+scale_x_continuous(limits = c(-2,6),breaks=seq(-2,8,2))
+
+
+#KRA
+abline_KRA <- as.data.frame(matrix(ncol=6))
+names(abline_KRA) <- c("Intercept","Slope","xmin","xmax","ymin","ymax")
+abline_KRA$Intercept <- KRA_model$coefficients[1]
+abline_KRA$Slope <- KRA_model$coefficients[2]
+abline_KRA$xmin <- min(species_df$KRA$SST)
+abline_KRA$xmax <- max(species_df$KRA$SST)
+abline_KRA$ymin <- (abline_KRA$Intercept+(abline_KRA$xmax*abline_KRA$Slope)) 
+abline_KRA$ymax <- (abline_KRA$Intercept)+((abline_KRA$xmin)*abline_KRA$Slope) 
+
+species_df$KRA$resids <- resid(KRA_model) + summary(KRA_model)$tTable[1] + summary(KRA_model)$tTable[2]*species_df$KRA$SST
+partial_model_KRA <- data.frame(effect("SST", KRA_model, xlevels=list(SST=seq(min(species_df$KRA$SST),max(species_df$KRA$SST),length=100))))
+
+KRA_plot <- ggplot(species_df$KRA,aes(x=SST,y=resids))+labs(title = "KRA")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+
+  geom_ribbon(data=partial_model_KRA,aes(x=partial_model_KRA$SST,ymin=partial_model_KRA$lower,ymax=partial_model_KRA$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=abline_KRA,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+
+  theme_bw()+labs(x="SST (°C)",y="Predator mass")+
+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.title =element_blank(),axis.text = element_text(size=15,colour="black"),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-1.5,0.5,1),limits = c())+scale_x_continuous(limits = c(-2,8),breaks=seq(-2,8,2))
+
+#LAC
+LAC_plot <- ggplot(species_df$LAC,aes(x=SST,y=mass_log10))+labs(title = "LAC")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+
+  theme_bw()+ labs(x="SST (°C)",y="Predator mass")+
+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.title =element_blank(),axis.text = element_text(size=15,colour="black"),plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(-1,1,0.5),limits=c(-0.7,0.5))+scale_x_continuous(breaks=seq(-2,8,2),limits=c(-2,8))
+
+
+#PRY
+abline_PRY <- as.data.frame(matrix(ncol=6))
+names(abline_PRY) <- c("Intercept","Slope","xmin","xmax","ymin","ymax")
+abline_PRY$Intercept <- PRY_model$coefficients[1]
+abline_PRY$Slope <- PRY_model$coefficients[2]
+abline_PRY$xmin <- min(species_df$PRY$SST)
+abline_PRY$xmax <- max(species_df$PRY$SST)
+abline_PRY$ymin <- (abline_PRY$Intercept+(abline_PRY$xmax*abline_PRY$Slope)) 
+abline_PRY$ymax <- (abline_PRY$Intercept)+((abline_PRY$xmin)*abline_PRY$Slope) 
+
+species_df$PRY$resids <- resid(PRY_model) + summary(PRY_model)$tTable[1] + summary(PRY_model)$tTable[2]*species_df$PRY$SST
+partial_model_PRY <- data.frame(effect("SST", PRY_model, xlevels=list(SST=seq(min(species_df$PRY$SST),max(species_df$PRY$SST),length=100))))
+
+PRY_plot <- ggplot(species_df$PRY,aes(x=SST,y=resids))+labs(title = "PRY")+
+  geom_point(size=2,alpha=0.3,pch=21,fill="grey",colour="black")+
+  geom_ribbon(data=partial_model_PRY,aes(x=partial_model_PRY$SST,ymin=partial_model_PRY$lower,ymax=partial_model_PRY$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.6)+
+  geom_segment(data=abline_PRY,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1,colour="black")+theme_bw()+
+  theme(plot.title = element_text(size=15,vjust=-1),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.title =element_blank(),axis.text = element_text(size=15,colour="black"),
+        plot.margin = unit(c(0,0.5,0,1), "lines"))+
+  scale_y_continuous(breaks=seq(0,1,0.5),limits = c(0,1))+scale_x_continuous(limits = c(0,6),breaks=seq(-2,8,2))
+
+library(cowplot)
+svg("Outputs/Plots/test_species_mass.svg",width=7,height = 8)
+plot_grid(ELN_plot,GYF_plot,GYR_plot,PRE_plot,PRM_plot,ELC_plot,GYN_plot,KRA_plot,LAC_plot,NULL, PRY_plot, NULL,scale=1,nrow=4)+
+draw_label("SST (°C)", x=0.5, y=  0, vjust=-0.5, angle= 0,size=20) +
+  draw_label("Predator mass", x=  0, y=0.5, vjust= 1.5, angle=90,size=20)
+dev.off()
+
+#Analyses of abundance data ####
+## change in diversity with SST ##
+library(vegan)
+all_abundances$sqrt_abund <- sqrt(all_abundances$abundance_1000m3)
+names(all_abundances)
+all_abundances_subset <- all_abundances[,c(1,2,3,12,13,14,15,8,11)] #using un-transformed abundance
+all_abundances_subset <- all_abundances[,c(1,2,3,12,13,14,15,8,16)] #using sqrt-transformed abundance
+
+community_data <- all_abundances_subset%>%
+  pivot_wider(names_from = Species.code,values_from = sqrt_abund)
+
+community_data[is.na(community_data)] <- 0
+
+shannon_index <- diversity(community_data[,-c(1:7)],index = "shannon")
+
+shannon_index <- as.data.frame(shannon_index)
+shannon_index$SST <- community_data$SST
+shannon_index$CHL <- community_data$CHL
+shannon_index$Cruise <- community_data$Cruise
+shannon_index$Lat <- community_data$Lat
+shannon_index$Lon <- community_data$Lon
+
+ggplot(shannon_index,aes(y=shannon_index,x=SST))+geom_point()+geom_smooth(method="lm")
+
+#### running LMMs of the data: ####
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+
+mod_gls <- gls(shannon_index~SST*CHL,data=shannon_index,method="REML") 
+mod_1 <- lme(shannon_index~SST*CHL,random = list(~1|Cruise),data=shannon_index,method = "REML",control=lmec) 
+mod_2 <- lme(shannon_index~SST*CHL,random = list(~SST|Cruise),data=shannon_index,method = "REML",control=lmec)
+mod_3 <- lme(shannon_index~SST*CHL,random = list(~CHL|Cruise),data=shannon_index,method = "REML",control=lmec)
+mod_4 <- lme(shannon_index~SST*CHL,random = list(~SST+CHL|Cruise),data=shannon_index,method = "REML",control=lmec)
+
+AIC(mod_gls,mod_1,mod_2,mod_3)
+
+summary(mod_gls)
+
+plot(mod_gls)
+qqnorm(resid(mod_gls,type = "pearson"))
+qqline(resid(mod_gls,type = "pearson")) 
+plot(factor(shannon_index$Cruise),resid(mod_gls,type="pearson"))
+
+# adding variance structures
+lmec = lmeControl(msMaxIter = 500, msMaxEval = 500)
+lme_mass_ident_Cruise <- gls(shannon_index~SST*CHL,
+                             weights = varIdent(form= ~ 1|Cruise),
+                             data=shannon_index,method = "REML",control=lmec) 
+
+lme_mass_fix_SST <- gls(shannon_index~SST*CHL,
+                        weights = varFixed(~SST),
+                        data=shannon_index,method = "REML",control=lmec)
+
+lme_mass_fix_CHL <- gls(shannon_index~SST*CHL,
+                        weights = varFixed(~CHL),
+                        data=shannon_index,method = "REML",control=lmec)
+#exp_var
+lme_mass_exp_SST <- gls(shannon_index~SST*CHL,
+                        weights = varExp(form=~SST),
+                        data=shannon_index,method = "REML",control=lmec)
+
+lme_mass_exp_CHL <- gls(shannon_index~SST*CHL,
+                        weights = varExp(form=~CHL),
+                        data=shannon_index,method = "REML",control=lmec)
+
+#const_var
+lme_mass_const_SST <- gls(shannon_index~SST*CHL,
+                          weights = varConstPower(form=~SST),
+                          data=shannon_index,method = "REML",control=lmec)
+
+lme_mass_const_CHL <- gls(shannon_index~SST*CHL,
+                          weights = varConstPower(form=~CHL),
+                          data=shannon_index,method = "REML",control=lmec)
+
+anova_frame <- anova(mod_gls,lme_mass_ident_Cruise,lme_mass_fix_SST,lme_mass_fix_CHL,lme_mass_exp_SST,
+                     lme_mass_exp_CHL,lme_mass_const_SST,lme_mass_const_CHL)
+
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_const_CHL)
+
+#checking autocorrelation
+dists <- as.matrix(dist(cbind(shannon_index$Lon,shannon_index$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_const_CHL,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+#now comparing different fixed effects structures with ML:
+lme_mass_SST_int_CHL <- gls(shannon_index~SST*CHL,
+                            weights = varConstPower(form=~CHL),
+                            data=shannon_index,method = "ML",control=lmec)
+
+lme_mass_SST_plus_CHL <- gls(shannon_index~SST+CHL,
+                             weights = varConstPower(form=~CHL),
+                             data=shannon_index,method = "ML",control=lmec)
+
+lme_mass_CHL <- gls(shannon_index~CHL,
+                    weights = varConstPower(form=~CHL),
+                    data=shannon_index,method = "ML",control=lmec)
+
+lme_mass_SST <- gls(shannon_index~SST,
+                    weights = varConstPower(form=~CHL),
+                    data=shannon_index,method = "ML",control=lmec)
+
+lme_mass <- gls(shannon_index~1,
+                weights = varConstPower(form=~CHL),
+                data=shannon_index,method = "ML",control=lmec)
+
+anova_frame <- anova(lme_mass_SST_int_CHL,lme_mass_SST_plus_CHL,lme_mass_CHL,lme_mass_SST,lme_mass)
+anova_frame[order(anova_frame$AIC,decreasing = T),]
+
+summary(lme_mass_SST)
+
+plot(lme_mass_SST)
+qqnorm(resid(lme_mass_SST,type = "pearson"))
+qqline(resid(lme_mass_SST,type = "pearson")) 
+plot(factor(shannon_index$Cruise),resid(lme_mass_SST,type="pearson"))
+
+#checking autocorrelation
+dists <- as.matrix(dist(cbind(shannon_index$Lon,shannon_index$Lat))) #distance matrix
+dists <- 1/dists
+dists[is.infinite(dists)] <- 0   #Distance value is inf for repeated observations from the same station
+Moran.I(resid(lme_mass_SST,type = "normalized"),dists) # suggests no autocorrelation in residuals
+
+## need to make a plot of this
+lme_mass_SST$coefficients[1]
+
+abline <- as.data.frame(matrix(ncol=6))
+names(abline) <- c("Intercept","Slope","xmin","xmax","ymin","ymax")
+abline$Intercept <- lme_mass_SST$coefficients[1]
+abline$Slope <- lme_mass_SST$coefficients[2]
+abline$xmin <- min(shannon_index$SST)
+abline$xmax <- max(shannon_index$SST)
+abline$ymin <- (abline$Intercept+(abline$xmax*abline$Slope)) 
+abline$ymax <- (abline$Intercept)+((abline$xmin)*abline$Slope) 
+
+shannon_index$resids <- resid(lme_mass_SST) + summary(lme_mass_SST)$tTable[1] + summary(lme_mass_SST)$tTable[2]*shannon_index$SST
+partial_model <- data.frame(effect("SST", lme_mass_SST, xlevels=list(SST=seq(min(shannon_index$SST),max(shannon_index$SST),length=100))))
+
+windows(record=T)
+svg("Outputs/Plots/diversity_SST.svg",width=10,height = 6)
+ggplot(shannon_index,aes(x=SST,y=resids))+
+  geom_point(size=3,alpha=0.7)+geom_segment(data=abline,aes(x=xmin,xend=xmax,y=ymax,yend=ymin),inherit.aes = FALSE,lwd=1.5,colour="black")+
+  geom_ribbon(data=partial_model,aes(x=partial_model$SST,ymin=partial_model$lower,ymax=partial_model$upper),inherit.aes = FALSE,fill="darkgrey",alpha=0.3)+
+  theme_classic()+ labs(x="SST (°C)",y=bquote('Diversity '(H^"'")))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.text = element_text(size=26,colour="black"),axis.title.x = element_text(size=30),
+        axis.title.y = element_text(size=30,vjust=1.5),legend.position="bottom",
+        legend.text = element_text(size=15),legend.title = element_blank())+
+  theme(axis.title = element_text(size=30),axis.text = element_text(size=27,colour="black"),
+                                            legend.position = "bottom",legend.title = element_text(size=27),
+                                            legend.text = element_text(size=24),legend.spacing.y = unit(0.2, 'cm'))+
+  scale_y_continuous(limits = c(-0.1,2))+scale_x_continuous(limits = c(-2,7.6),breaks=c(seq(-1.5,7.5,1.5)))
+dev.off()
+#### plots of abundance by SST for each species ####
+shannon_index
+all_abundances2 <- all_abundances
+all_abundances$sqrt_abund <- sqrt(all_abundances$abundance_1000m3)
+
+all_abundances2 <- all_abundances%>%
+  group_by(Cruise,SST,Species.code)%>%
+  summarise(abundance_1000m3=sum(abundance_1000m3),SST=mean(SST),sqrt_abund=sum(sqrt_abund),Lat=mean(Lat))
+
+all_abundances2$SST<- round(all_abundances2$SST,2)
+unique(all_abundances2$SST)
+unique(all_abundances2$SST)
+svg("Outputs/Plots/abundance_SST.svg",width=10,height = 6)
+ggplot(all_abundances2,aes(fill=Species.code,y=sqrt_abund,x=as.factor(SST)))+geom_bar(position="fill",stat="identity")+
+  scale_fill_manual(name = "Species",
+values = c("#D55E00","#56B4E9","#CC79A7","#000000","#6B244C","#E69F00","#F0E442","#009E73","#2A297A","#0072B2"))+
+  scale_x_discrete(breaks=c(-1.87,-0.39,1.80,3.69,7.50),labels=c("-1.87","-0.40","1.80","3.70","7.50"),expand = c(0,0))+labs(x="SST (°C)",y=bquote("Proportional abundance"))+
+  scale_y_continuous(breaks=c(0,0.5,1),expand = c(0,0))+theme_classic()+
+  theme(axis.title.x = element_text(size=28),axis.title.y = element_text(size=28),axis.text = element_text(size=25,colour="black"),
+        axis.text.x = element_text(angle=0,hjust=0.15),
+        legend.position = "right",legend.title = element_text(size=22),
+        legend.text = element_text(size=20),legend.spacing.y = unit(0.2, 'cm'))+
+  theme(plot.margin = unit(c(0.2, 0.1, 0, 0),"inches"))
+dev.off()
